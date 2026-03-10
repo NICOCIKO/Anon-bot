@@ -93,16 +93,16 @@ async def cmd_start(message: types.Message, command: CommandStart):
 
 # ────────────── Отправка анонимного сообщения владельцу и админу ──────────────
 async def forward_to_receiver_and_admin(sender_id, target_id, message_type, content, media_message=None):
-    # ────────────── 1️⃣ А получает уведомление без кнопки ──────────────
+    # ────────────── А получает уведомление без кнопки и без подсказки ──────────────
     try:
         msg = await bot.send_message(
             target_id,
-            f"💬 У тебя новое сообщение!\n\n{content}\n\n↩️ Свайпни для ответа"
+            f"💬 У тебя новое сообщение!\n\n{content}"
         )
     except:
         msg = None
 
-    # ────────────── 2️⃣ Логирование админу ──────────────
+    # ────────────── Логирование админу ──────────────
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT username FROM users WHERE id=?", (target_id,)) as cur:
             target_user = await cur.fetchone()
@@ -127,17 +127,17 @@ async def forward_to_receiver_and_admin(sender_id, target_id, message_type, cont
         """, (sender_id, target_id, message_type, content, msg.message_id if msg else None))
         await db.commit()
 
-    # ────────────── 3️⃣ Б получает уведомление ✅ ──────────────
+    # ────────────── Б получает уведомления ──────────────
     bot_username = (await bot.get_me()).username
     user_link = f"https://t.me/{bot_username}?start={sender_id}"
 
-    # Сообщение об успешной отправке
+    # ✅ Сообщение об успешной отправке
     kb_again = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✍️ Написать ещё", callback_data="write_again")]
     ])
     await bot.send_message(sender_id, "✅ Сообщение отправлено, ожидайте ответ!", reply_markup=kb_again)
 
-    # Ссылка для распространения
+    # 💬 Ссылка для распространения
     share_text = (
         f"Начните получать анонимные вопросы прямо сейчас!\n\n"
         f"👉 {user_link}\n\n"
