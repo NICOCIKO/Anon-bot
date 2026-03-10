@@ -2,19 +2,19 @@ import asyncio
 import aiosqlite
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import BOT_TOKEN, ADMINS
 
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher()
 
-DB_PATH = "db.sqlite3"
+DB = "db.sqlite3"
 user_targets = {}
 
 
-# ───── БАЗА ─────
+# ───────── БАЗА ─────────
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB) as db:
         await db.execute("""
         CREATE TABLE IF NOT EXISTS questions(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,7 +26,7 @@ async def init_db():
         await db.commit()
 
 
-# ───── КНОПКИ ─────
+# ───────── КНОПКИ ─────────
 def cancel_btn():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -52,23 +52,20 @@ def share_btn(link):
     )
 
 
-# ───── ЛОГ АДМИНАМ ─────
-async def send_admin_log(sender, target_id, msg_type, content):
+# ───────── ЛОГ АДМИНАМ ─────────
+async def send_admin_log(message, target_id, text):
 
+    sender = message.from_user
     sender_id = sender.id
     username = sender.username or "нет"
-    first = sender.first_name or ""
-    last = sender.last_name or ""
-    name = f"{first} {last}".strip()
+    name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
 
     profile = f"tg://user?id={sender_id}"
 
     target = await bot.get_chat(target_id)
 
     t_username = target.username or "нет"
-    t_first = target.first_name or ""
-    t_last = target.last_name or ""
-    t_name = f"{t_first} {t_last}".strip()
+    t_name = f"{target.first_name or ''} {target.last_name or ''}".strip()
 
     log = (
         f"📨 <b>Новое сообщение</b>\n\n"
@@ -84,18 +81,18 @@ async def send_admin_log(sender, target_id, msg_type, content):
         f"Username: @{t_username}\n"
         f"ID: <code>{target_id}</code>\n\n"
 
-        f"📦 Тип: {msg_type}\n"
-        f"💬 {content}"
+        f"💬 {text}"
     )
 
     for admin in ADMINS:
         try:
-            await bot.send_message(admin, log, disable_web_page_preview=True)
+            await bot.send_message(admin, log)
+            await message.copy_to(admin)
         except:
             pass
 
 
-# ───── START ─────
+# ───────── START ─────────
 @dp.message(CommandStart())
 async def start(message: types.Message, command: CommandStart):
 
@@ -135,12 +132,11 @@ async def start(message: types.Message, command: CommandStart):
     )
 
 
-# ───── ОТПРАВКА СООБЩЕНИЯ ─────
+# ───────── ОТПРАВКА СООБЩЕНИЯ ─────────
 @dp.message()
 async def send_question(message: types.Message):
 
-    sender = message.from_user
-    sender_id = sender.id
+    sender_id = message.from_user.id
 
     if sender_id not in user_targets:
         return
@@ -149,22 +145,16 @@ async def send_question(message: types.Message):
 
     text = message.text or message.caption or "медиа"
 
-    try:
-        sent = await message.copy_to(target)
-    except:
-        sent = await bot.send_message(
-            target,
-            f"💬 У тебя новое сообщение!\n\n{text}"
-        )
+    sent = await message.copy_to(target)
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB) as db:
         await db.execute(
             "INSERT INTO questions(sender_id,receiver_id,message_id) VALUES(?,?,?)",
             (sender_id, target, sent.message_id)
         )
         await db.commit()
 
-    await send_admin_log(sender, target, message.content_type, text)
+    await send_admin_log(message, target, text)
 
     await message.answer(
         "✅ Сообщение отправлено, ожидайте ответ!",
@@ -182,13 +172,13 @@ async def send_question(message: types.Message):
     )
 
 
-# ───── REPLY ─────
+# ───────── ОТВЕТ ─────────
 @dp.message(F.reply_to_message)
 async def reply_answer(message: types.Message):
 
     msg_id = message.reply_to_message.message_id
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB) as db:
         async with db.execute(
             "SELECT sender_id FROM questions WHERE message_id=?",
             (msg_id,)
@@ -200,16 +190,19 @@ async def reply_answer(message: types.Message):
 
     sender_id = row[0]
 
-    await bot.send_message(
-        sender_id,
-        f"💬 Ответ:\n\n{message.text}",
-        reply_markup=again_btn()
-    )
+    if message.text:
+        await bot.send_message(
+            sender_id,
+            f"💬 Ответ:\n\n{message.text}",
+            reply_markup=again_btn()
+        )
+    else:
+        await message.copy_to(sender_id)
 
     await message.answer("✅ Ответ успешно отправлен")
 
 
-# ───── КНОПКИ ─────
+# ───────── КНОПКИ ─────────
 @dp.callback_query(F.data == "again")
 async def again(call: types.CallbackQuery):
 
@@ -218,7 +211,10 @@ async def again(call: types.CallbackQuery):
     if user_id not in user_targets:
         return
 
-    await call.message.answer("✍️ Напишите сообщение")
+    await call.message.answer(
+        "🚀 Напишите ещё одно сообщение\n\n"
+        "Можно отправить текст или медиа"
+    )
 
 
 @dp.callback_query(F.data == "cancel")
@@ -235,7 +231,7 @@ async def cancel(call: types.CallbackQuery):
     )
 
 
-# ───── ЗАПУСК ─────
+# ───────── ЗАПУСК ─────────
 async def main():
     await init_db()
     await dp.start_polling(bot)
