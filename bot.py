@@ -25,7 +25,8 @@ async def init_db():
             sender_id INTEGER,
             receiver_id INTEGER,
             message_type TEXT,
-            content TEXT
+            content TEXT,
+            message_id INTEGER
         )
         """)
         await db.commit()
@@ -90,15 +91,19 @@ async def cmd_start(message: types.Message, command: CommandStart):
         reply_markup=share_link_keyboard(user_id, bot_username)
     )
 
-# ────────────── ОБРАБОТКА АНОНИМНЫХ СООБЩЕНИЙ ──────────────
-async def forward_to_receiver_and_admin(sender_id, target_id, message_type, content):
-    # Отправка владельцу ссылки
+# ────────────── Отправка анонимного сообщения владельцу и админу ──────────────
+async def forward_to_receiver_and_admin(sender_id, target_id, message_type, content, media_message=None):
+    # Отправка А с возможностью reply
     try:
-        await bot.send_message(target_id, f"💌 Анонимное сообщение:\n\n{content}")
+        msg = await bot.send_message(
+            target_id,
+            f"💬 У тебя новое сообщение!\n\n{content}",
+            reply_markup=cancel_button(target_id)
+        )
     except:
-        pass  # Можно обработать ошибки
+        msg = None
 
-    # Отправка админу
+    # Логируем админу
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT username FROM users WHERE id=?", (target_id,)) as cur:
             target_user = await cur.fetchone()
@@ -107,49 +112,40 @@ async def forward_to_receiver_and_admin(sender_id, target_id, message_type, cont
             sender_user = await cur.fetchone()
             sender_username = sender_user[0] if sender_user else "unknown"
 
-    log_text = (
-        f"📝 Новое анонимное сообщение\n\n"
-        f"Отправитель: @{sender_username} (ID: {sender_id})\n"
-        f"Кому: @{target_username} (ID: {target_id})\n"
-        f"Тип: {message_type}\n"
-        f"Содержание: {content}"
-    )
-    await bot.send_message(ADMIN_ID, log_text)
+        log_text = (
+            f"📝 Новое анонимное сообщение\n\n"
+            f"Отправитель: @{sender_username} (ID: {sender_id})\n"
+            f"Кому: @{target_username} (ID: {target_id})\n"
+            f"Тип: {message_type}\n"
+            f"Содержание: {content}"
+        )
+        await bot.send_message(ADMIN_ID, log_text)
 
-    # Сохраняем в базу
-    async with aiosqlite.connect(DB_PATH) as db:
+        # Сохраняем в базу
         await db.execute("""
-            INSERT INTO questions (sender_id, receiver_id, message_type, content)
-            VALUES (?, ?, ?, ?)
-        """, (sender_id, target_id, message_type, content))
+            INSERT INTO questions (sender_id, receiver_id, message_type, content, message_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (sender_id, target_id, message_type, content, msg.message_id if msg else None))
         await db.commit()
 
-    # Сообщение отправителю Б
+    # Сообщение Б с кнопкой "Написать ещё"
     bot_username = (await bot.get_me()).username
     user_link = f"https://t.me/{bot_username}?start={sender_id}"
-
     kb_again = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✍️ Написать ещё", callback_data="write_again")]
     ])
     await bot.send_message(sender_id, "✅ Сообщение отправлено, ожидайте ответ!", reply_markup=kb_again)
 
-    share_text = f"Начните получать анонимные вопросы прямо сейчас!\n\n👉 {user_link}\n\nРазместите эту ссылку ☝️ в описании своего профиля Telegram, TikTok, Instagram (stories), чтобы вам могли написать 💬"
-    share_url = f"https://t.me/share/url?url={share_text}"
-    kb_share = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Поделиться ссылкой", url=share_url)]
-    ])
-    await bot.send_message(sender_id, share_text, reply_markup=kb_share)
-
-# ────────────── Обработка текстовых сообщений ──────────────
+# ────────────── Обработка текстовых сообщений от Б ──────────────
 @dp.message(F.text & ~F.command)
 async def handle_text(message: types.Message):
     sender_id = message.from_user.id
     target_id = await get_target(sender_id)
     if not target_id:
         return
-    await forward_to_receiver_and_admin(sender_id, target_id, "Текст", message.text)
+    await forward_to_receiver_and_admin(sender_id, target_id, "Текст", message.text, media_message=message)
 
-# ────────────── Обработка медиа (фото, видео, голосовые, стикеры) ──────────────
+# ────────────── Обработка медиа ──────────────
 @dp.message(F.content_type.in_({"photo", "video", "voice", "video_note", "sticker"}))
 async def handle_media(message: types.Message):
     sender_id = message.from_user.id
@@ -157,18 +153,42 @@ async def handle_media(message: types.Message):
     if not target_id:
         return
 
-    # Сохраняем контент как текстовое описание
     content = message.caption or f"[{message.content_type}]"
+    await forward_to_receiver_and_admin(sender_id, target_id, message.content_type, content, media_message=message)
 
-    await forward_to_receiver_and_admin(sender_id, target_id, message.content_type, content)
-
-    # Пересылаем медиа владельцу ссылки
     try:
         await message.copy_to(target_id)
     except:
         pass
 
-# ────────────── Обработка кнопки "Написать ещё" ──────────────
+# ────────────── Reply от А ──────────────
+@dp.message(F.reply_to_message)
+async def reply_from_a(message: types.Message):
+    reply_msg = message.reply_to_message
+    sender_id = message.from_user.id  # А
+    target_id = None
+
+    # Ищем Б по message_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT sender_id FROM questions WHERE message_id=?", (reply_msg.message_id,)) as cur:
+            row = await cur.fetchone()
+            if row:
+                target_id = row[0]
+
+    if not target_id:
+        await message.answer("⚠️ Не удалось определить получателя.")
+        return
+
+    # Отправка ответа Б с кнопкой "Написать ещё"
+    kb_again = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Написать ещё", callback_data="write_again")]
+    ])
+    await bot.send_message(target_id, f"💬 Ответ от @{message.from_user.username}:\n\n{message.text}", reply_markup=kb_again)
+
+    # Подтверждение А
+    await message.answer("✅ Ответ успешно отправлен")
+
+# ────────────── Кнопка "Написать ещё" ──────────────
 @dp.callback_query(F.data == "write_again")
 async def write_again(call: types.CallbackQuery):
     sender_id = call.from_user.id
@@ -176,26 +196,23 @@ async def write_again(call: types.CallbackQuery):
     if not target_id:
         await call.message.answer("⚠️ Не удалось определить получателя.")
         return
-
     await call.message.answer(
         "🚀 Здесь можно отправить анонимное сообщение человеку, который опубликовал эту ссылку\n\n"
-        "🖊 Напишите сюда всё, что хотите ему передать, и через несколько секунд он получит ваше сообщение, но не будет знать от кого\n\n"
-        "Отправить можно фото, видео, 💬 текст, 🔊 голосовые, 📷 видеосообщения, а также ✨ стикеры",
+        "🖊 Напишите сюда всё, что хотите ему передать...",
         reply_markup=cancel_button(sender_id)
     )
     await call.message.delete()
 
-# ────────────── Кнопка Отмена ──────────────
+# ────────────── Кнопка "Отмена" ──────────────
 @dp.callback_query(F.data.startswith("cancel_to_start_"))
 async def cancel_to_start(call: types.CallbackQuery):
     user_id = call.from_user.id
     bot_username = (await bot.get_me()).username
-    user_link = f"https://t.me/{bot_username}?start={user_id}"
     kb_share = share_link_keyboard(user_id, bot_username)
-
     await call.message.answer(
         f"👋 Начните получать анонимные вопросы прямо сейчас!\n\n"
-        f"👉 {user_link}\n\nРазместите эту ссылку ☝️ в описании своего профиля Telegram, TikTok, Instagram (stories), чтобы вам могли написать 💬",
+        f"👉 https://t.me/{bot_username}?start={user_id}\n\n"
+        f"Разместите эту ссылку ☝️ в описании своего профиля Telegram, TikTok, Instagram (stories), чтобы вам могли написать 💬",
         reply_markup=kb_share
     )
     await call.message.delete()
