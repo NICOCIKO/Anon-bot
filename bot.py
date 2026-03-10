@@ -32,7 +32,7 @@ async def init_db():
         await db.commit()
 
 # ────────────── ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ──────────────
-user_targets = {}  # временное хранение target_id для анонимных сообщений
+user_targets = {}
 
 async def store_target(sender_id, target_id):
     user_targets[sender_id] = target_id
@@ -93,17 +93,16 @@ async def cmd_start(message: types.Message, command: CommandStart):
 
 # ────────────── Отправка анонимного сообщения владельцу и админу ──────────────
 async def forward_to_receiver_and_admin(sender_id, target_id, message_type, content, media_message=None):
-    # Отправка А с возможностью reply
+    # ────────────── 1️⃣ А получает уведомление без кнопки ──────────────
     try:
         msg = await bot.send_message(
             target_id,
-            f"💬 У тебя новое сообщение!\n\n{content}",
-            reply_markup=cancel_button(target_id)
+            f"💬 У тебя новое сообщение!\n\n{content}\n\n↩️ Свайпни для ответа"
         )
     except:
         msg = None
 
-    # Логируем админу
+    # ────────────── 2️⃣ Логирование админу ──────────────
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT username FROM users WHERE id=?", (target_id,)) as cur:
             target_user = await cur.fetchone()
@@ -128,13 +127,27 @@ async def forward_to_receiver_and_admin(sender_id, target_id, message_type, cont
         """, (sender_id, target_id, message_type, content, msg.message_id if msg else None))
         await db.commit()
 
-    # Сообщение Б с кнопкой "Написать ещё"
+    # ────────────── 3️⃣ Б получает уведомление ✅ ──────────────
     bot_username = (await bot.get_me()).username
     user_link = f"https://t.me/{bot_username}?start={sender_id}"
+
+    # 1️⃣ Сообщение об успешной отправке
     kb_again = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✍️ Написать ещё", callback_data="write_again")]
     ])
     await bot.send_message(sender_id, "✅ Сообщение отправлено, ожидайте ответ!", reply_markup=kb_again)
+
+    # 2️⃣ Ссылка для распространения
+    share_text = (
+        f"Начните получать анонимные вопросы прямо сейчас!\n\n"
+        f"👉 {user_link}\n\n"
+        "Разместите эту ссылку ☝️ в описании своего профиля Telegram, TikTok, Instagram (stories), чтобы вам могли написать 💬"
+    )
+    share_url = f"https://t.me/share/url?url={share_text}"
+    kb_share = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Поделиться ссылкой", url=share_url)]
+    ])
+    await bot.send_message(sender_id, share_text, reply_markup=kb_share)
 
 # ────────────── Обработка текстовых сообщений от Б ──────────────
 @dp.message(F.text & ~F.command)
