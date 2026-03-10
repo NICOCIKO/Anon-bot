@@ -120,7 +120,7 @@ async def forward_to_receiver_and_admin(sender_id, target_id, message_type, cont
         )
         await bot.send_message(ADMIN_ID, log_text)
 
-        # Сохраняем в базу
+        # ────────────── Сохраняем message_id для reply ──────────────
         await db.execute("""
             INSERT INTO questions (sender_id, receiver_id, message_type, content, message_id)
             VALUES (?, ?, ?, ?, ?)
@@ -131,13 +131,13 @@ async def forward_to_receiver_and_admin(sender_id, target_id, message_type, cont
     bot_username = (await bot.get_me()).username
     user_link = f"https://t.me/{bot_username}?start={sender_id}"
 
-    # 1️⃣ Сообщение об успешной отправке
+    # Сообщение об успешной отправке
     kb_again = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✍️ Написать ещё", callback_data="write_again")]
     ])
     await bot.send_message(sender_id, "✅ Сообщение отправлено, ожидайте ответ!", reply_markup=kb_again)
 
-    # 2️⃣ Ссылка для распространения
+    # Ссылка для распространения
     share_text = (
         f"Начните получать анонимные вопросы прямо сейчас!\n\n"
         f"👉 {user_link}\n\n"
@@ -177,28 +177,24 @@ async def handle_media(message: types.Message):
 # ────────────── Reply от А ──────────────
 @dp.message(F.reply_to_message)
 async def reply_from_a(message: types.Message):
-    reply_msg = message.reply_to_message
-    sender_id = message.from_user.id  # А
-    target_id = None
+    reply_msg_id = message.reply_to_message.message_id
 
-    # Ищем Б по message_id
+    # Ищем sender_id (Б) по message_id в базе
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT sender_id FROM questions WHERE message_id=?", (reply_msg.message_id,)) as cur:
+        async with db.execute("SELECT sender_id FROM questions WHERE message_id=?", (reply_msg_id,)) as cur:
             row = await cur.fetchone()
             if row:
                 target_id = row[0]
 
-    if not target_id:
+    if not row:
         await message.answer("⚠️ Не удалось определить получателя.")
         return
 
-    # Отправка ответа Б с кнопкой "Написать ещё"
+    # Отправка ответа Б
     kb_again = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✍️ Написать ещё", callback_data="write_again")]
     ])
     await bot.send_message(target_id, f"💬 Ответ от @{message.from_user.username}:\n\n{message.text}", reply_markup=kb_again)
-
-    # Подтверждение А
     await message.answer("✅ Ответ успешно отправлен")
 
 # ────────────── Кнопка "Написать ещё" ──────────────
