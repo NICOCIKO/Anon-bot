@@ -20,8 +20,7 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS questions(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         sender_id INTEGER,
-        receiver_id INTEGER,
-        message_id INTEGER
+        receiver_id INTEGER
         )
         """)
         await db.commit()
@@ -44,10 +43,13 @@ def again_btn():
     )
 
 
-def reply_btn(msg_id):
+def reply_btn(sender_id):
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✍️ Ответить", callback_data=f"reply_{msg_id}")]
+            [InlineKeyboardButton(
+                text="✍️ Ответить",
+                callback_data=f"replyto_{sender_id}"
+            )]
         ]
     )
 
@@ -62,22 +64,18 @@ def share_btn(link):
 
 
 # ───────── ЛОГ АДМИНАМ ─────────
-async def send_admin_log(message, target_id, text):
+async def send_admin_log(message, target_id):
+
     sender = message.from_user
     sender_id = sender.id
-    username = sender.username or "нет"
-    name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
 
-    target = await bot.get_chat(target_id)
-    t_username = target.username or "нет"
-    t_name = f"{target.first_name or ''} {target.last_name or ''}".strip()
+    text = message.text or message.caption or "медиа"
 
     log = (
-        f"📨 <b>Новое сообщение</b>\n\n"
-        f"👤 Отправитель: {name} (@{username})\n"
-        f"ID: <code>{sender_id}</code>\n\n"
-        f"🎯 Получатель: {t_name} (@{t_username})\n"
-        f"ID: <code>{target_id}</code>\n\n"
+        f"📨 Новое сообщение\n\n"
+        f"👤 Отправитель: {sender.first_name} (@{sender.username or 'нет'})\n"
+        f"ID: {sender_id}\n\n"
+        f"🎯 Получатель ID: {target_id}\n\n"
         f"💬 {text}"
     )
 
@@ -92,20 +90,22 @@ async def send_admin_log(message, target_id, text):
 # ───────── START ─────────
 @dp.message(CommandStart())
 async def start(message: types.Message, command: CommandStart):
+
     user_id = message.from_user.id
     bot_username = (await bot.get_me()).username
     link = f"https://t.me/{bot_username}?start={user_id}"
 
     if command.args:
         target = int(command.args)
+
         if target == user_id:
             return
 
         user_targets[user_id] = target
 
         await message.answer(
-            "🚀 Здесь можно отправить анонимное сообщение человеку\n\n"
-            "🖊 Напишите сообщение или отправьте медиа",
+            "🚀 Напишите анонимное сообщение\n\n"
+            "Можно отправлять текст и медиа",
             reply_markup=cancel_btn()
         )
         return
@@ -126,33 +126,32 @@ async def send_question(message: types.Message):
         return
 
     target = user_targets[sender_id]
-    text = message.text or message.caption or "медиа"
 
-    # ⭐ ЗАЩИТА ОТ chat not found
+    # защита от chat not found
     try:
-        sent = await message.copy_to(target)
+        await message.copy_to(target)
     except:
         await message.answer(
             "❌ Сообщение не доставлено.\n\n"
-            "Пользователь должен сначала открыть бота и нажать Start."
+            "Пользователь не активировал бота."
         )
         return
 
-    # кнопка ответить
+    # сообщение А
     await bot.send_message(
         target,
         "💬 У тебя новое сообщение!",
-        reply_markup=reply_btn(sent.message_id)
+        reply_markup=reply_btn(sender_id)
     )
 
     async with aiosqlite.connect(DB) as db:
         await db.execute(
-            "INSERT INTO questions(sender_id,receiver_id,message_id) VALUES(?,?,?)",
-            (sender_id, target, sent.message_id)
+            "INSERT INTO questions(sender_id,receiver_id) VALUES(?,?)",
+            (sender_id, target)
         )
         await db.commit()
 
-    await send_admin_log(message, target, text)
+    await send_admin_log(message, target)
 
     await message.answer(
         "✅ Сообщение отправлено, ожидайте ответ!",
@@ -161,10 +160,12 @@ async def send_question(message: types.Message):
 
 
 # ───────── КНОПКА ОТВЕТИТЬ ─────────
-@dp.callback_query(F.data.startswith("reply_"))
+@dp.callback_query(F.data.startswith("replyto_"))
 async def start_reply(call: types.CallbackQuery):
-    msg_id = int(call.data.split("_")[1])
-    reply_wait[call.from_user.id] = msg_id
+
+    sender_id = int(call.data.split("_")[1])
+    reply_wait[call.from_user.id] = sender_id
+
     await call.message.answer("✍️ Напишите ответ")
 
 
@@ -177,27 +178,22 @@ async def send_reply(message: types.Message):
     if user_id not in reply_wait:
         return
 
-    msg_id = reply_wait[user_id]
+    sender_id = reply_wait[user_id]
 
-    async with aiosqlite.connect(DB) as db:
-        async with db.execute(
-            "SELECT sender_id FROM questions WHERE message_id=?",
-            (msg_id,)
-        ) as cur:
-            row = await cur.fetchone()
+    try:
+        await bot.send_message(
+            sender_id,
+            f"💬 Ответ:\n\n{message.text}",
+            reply_markup=again_btn()
+        )
 
-    if not row:
-        return
+        await message.answer("✅ Ответ успешно отправлен")
 
-    sender_id = row[0]
-
-    await bot.send_message(
-        sender_id,
-        f"💬 Ответ:\n\n{message.text}",
-        reply_markup=again_btn()
-    )
-
-    await message.answer("✅ Ответ успешно отправлен")
+    except:
+        await message.answer(
+            "❌ Ответ не доставлен.\n\n"
+            "Пользователь заблокировал бота или удалил чат."
+        )
 
     del reply_wait[user_id]
 
@@ -210,9 +206,9 @@ async def again(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "cancel")
 async def cancel(call: types.CallbackQuery):
+
     bot_username = (await bot.get_me()).username
-    user_id = call.from_user.id
-    link = f"https://t.me/{bot_username}?start={user_id}"
+    link = f"https://t.me/{bot_username}?start={call.from_user.id}"
 
     await call.message.answer(
         f"Начните получать анонимные вопросы прямо сейчас!\n\n👉 {link}",
