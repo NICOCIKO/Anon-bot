@@ -54,7 +54,7 @@ def share_btn(link):
 # ───────── ЛОГ АДМИНАМ ─────────
 async def send_admin_log(message, target_id):
     sender = message.from_user
-    text = message.text or message.caption or "медиа"
+    text = message.text or message.caption or "📎 Медиа сообщение"
 
     log = (
         f"📨 <b>Новое сообщение</b>\n\n"
@@ -79,15 +79,12 @@ async def start(message: types.Message, command: CommandStart):
     user_id = message.from_user.id
     bot_username = (await bot.get_me()).username
 
-    # Если зашли по чужой ссылке
+    # Если зашли по любой ссылке (своя или чужая)
     if command.args:
         try:
             target_id = int(command.args)
         except:
-            return
-
-        if target_id == user_id:
-            return
+            target_id = user_id
 
         user_targets[user_id] = target_id
 
@@ -99,14 +96,15 @@ async def start(message: types.Message, command: CommandStart):
         )
         return
 
-    # Иначе обычный старт — показываем свою ссылку
+    # Если просто нажал /start без параметров
     link = f"https://t.me/{bot_username}?start={user_id}"
+    user_targets[user_id] = user_id
 
     await message.answer(
-        f"<b>Начните получать анонимные вопросы прямо сейчас!</b>\n\n"
-        f"<b>Ваша ссылка:</b>\n{link}\n\n"
-        "<b>Разместите эту ссылку ☝️ в описании своего профиля Telegram, TikTok, Instagram (stories), чтобы вам могли написать 💬</b>",
-        reply_markup=share_btn(link)
+        "<b>🚀 Здесь можно отправить анонимное сообщение человеку, который опубликовал эту ссылку</b>\n\n"
+        "<b>🖊 Напишите сюда всё, что хотите ему передать, и через несколько секунд он получит ваше сообщение, но не будет знать от кого</b>\n\n"
+        "<b>Отправить можно фото, видео, 💬 текст, 🔊 голосовые, 📷 видеосообщения (кружки), а также ✨ стикеры</b>",
+        reply_markup=cancel_btn()
     )
 
 
@@ -121,7 +119,16 @@ async def send_question(message: types.Message):
     target = user_targets[sender_id]
 
     try:
-        await message.copy_to(target)
+        # Отправка текста с цитированием
+        sent_msg = await bot.send_message(
+            target,
+            f"<b>💬 У тебя новое сообщение!</b>\n\n{message.text or '📎 Медиа сообщение'}",
+        )
+
+        # Если есть медиа, копируем их отдельно
+        if message.photo or message.video or message.voice or message.sticker or message.animation or message.document:
+            await message.copy_to(target)
+
     except:
         await message.answer(
             "<b>❌ Сообщение не доставлено.</b>\n\n"
@@ -129,16 +136,21 @@ async def send_question(message: types.Message):
         )
         return
 
-    # Сообщение для A — без кнопок
-    await bot.send_message(target, "<b>💬 У тебя новое сообщение!</b>")
-
     # Лог для админов
     await send_admin_log(message, target)
 
-    # Ответ Б
+    # Подтверждение для Б
+    await message.answer("<b>✅ Сообщение отправлено!</b>")
+
+    # Ссылка и инструкция для Б
+    bot_username = (await bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start={sender_id}"
+
     await message.answer(
-        "<b>✅ Сообщение отправлено!</b>",
-        reply_markup=again_btn()
+        f"<b>Начните получать анонимные вопросы прямо сейчас!</b>\n\n"
+        f"<b>Ваша ссылка:</b>\n{link}\n\n"
+        "<b>Разместите эту ссылку ☝️ в описании своего профиля Telegram, TikTok, Instagram (stories), чтобы вам могли написать 💬</b>",
+        reply_markup=share_btn(link)
     )
 
 
